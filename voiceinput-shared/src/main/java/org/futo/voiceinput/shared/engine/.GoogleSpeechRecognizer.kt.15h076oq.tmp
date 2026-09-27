@@ -1,0 +1,280 @@
+package org.futo.voiceinput.shared.engine
+
+import android.Manifest
+import android.content.ComponentName
+import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.speech.RecognitionListener
+import android.speech.RecognizerIntent
+import android.speech.SpeechRecognizer
+import org.futo.voiceinput.shared.types.AudioRecognizerListener
+import org.futo.voiceinput.shared.types.MagnitudeState
+import org.futo.voiceinput.shared.ui.MicrophoneDeviceState
+import org.futo.voiceinput.shared.util.AudioFocusController
+import org.futo.voiceinput.shared.util.openMicPermissionSettings
+
+data class OnlineEngineConfiguration(
+    /** BCP-47 tag of the recognition language, or null for the system default. */
+    val languageTag: String?,
+    /** Whether the recognized text is delivered while the user is still speaking. */
+    val showLivePartialResults: Boolean,
+    /** Whether to prefer Google's recognition service over the system default one. */
+    val preferGoogleService: Boolean,
+    /** Whether videos/music should be paused while the session is active. */
+    val requestAudioFocus: Boolean
+)
+
+private val ONLINE_DEVICE_STATE = MicrophoneDeviceState(
+    bluetoothAvailable = false,
+    bluetoothActive = false,
+    bluetoothPreferredByUser = false,
+    setBluetooth = { },
+    deviceName = ""
+)
+
+private const val STOP_TIMEOUT_MS = 5000L
+
+private val GOOGLE_SERVICE_COMPONENT = ComponentName(
+    "com.google.android.googlequicksearchbox",
+    "com.google.android.voicesearch.serviceapi.GoogleSpeechRecognitionService"
+)
+
+/** True when the Android framework has a speech recognition service (usually Google's) to delegate to. */
+fun isSpeechRecognitionAvailable(context: Context): Boolean {
+    return try {
+        SpeechRecognizer.isRecognitionAvailable(context)
+    } catch (e: Exception) {
+        false
+    }
+}
+
+/**
+ * Speech-to-text engine backed by the Android speech recognition service,
+ * usually Google's online ("standard") recognition. The audio is recorded and
+ * transcribed by the service itself; this class only drives it and forwards the
+ * results to an [AudioRecognizerListener].
+ */
+class GoogleSpeechRecognizer(
+    private val context: Context,
+    private val listener: AudioRecognizerListener,
+    private val configuration: OnlineEngineConfiguration,
+    private val onFailure: (SpeechEngineFailure) -> Unit
+) : SpeechEngine {
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val audioFocus = AudioFocusController(context, configuration.requestAudioFocus)
+
+    private var recognizer: SpeechRecognizer? = null
+    private var sessionActive = false
+    private var lastPartialText = ""
+
+    private val stopTimeout = Runnable {
+        if (sessionActive) {
+            if (lastPartialText.isNotEmpty()) {
+                val text = lastPartialText
+                resetOnMainThread()
+                listener.finished(text)
+            } else {
+                fail(SpeechEngineFailure.OTHER)
+            }
+        }
+    }
+
+    override fun start() {
+        mainHandler.post { startOnMainThread() }
+    }
+
+    override fun finish() {
+        mainHandler.post {
+            if (!sessionActive) return@post
+
+            val recognizer = recognizer ?: return@post
+            mainHandler.removeCallbacks(stopTimeout)
+            mainHandler.postDelayed(stopTimeout, STOP_TIMEOUT_MS)
+            recognizer.stopListening()
+        }
+    }
+
+    override fun cancel() {
+        mainHandler.post {
+            resetOnMainThread()
+            listener.cancelled()
+        }
+    }
+
+    override fun reset() {
+        mainHandler.post { resetOnMainThread() }
+    }
+
+    override fun openPermissionSettings() {
+        openMicPermissionSettings(context)
+        cancel()
+    }
+
+    private fun startOnMainThread() {
+        resetOnMainThread()
+        listener.loading()
+
+        if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            listener.needPermission { wasGranted ->
+                if (wasGranted) {
+                    start()
+                }
+            }
+            return
+        }
+
+        val recognizer = createRecognizer()
+        if (recognizer == null) {
+            onFailure(SpeechEngineFailure.SERVICE)
+            return
+        }
+
+        this.recognizer = recognizer
+        sessionActive = true
+        lastPartialText = ""
+
+        audioFocus.focus()
+        recognizer.setRecognitionListener(recognitionListener)
+        recognizer.startListening(buildRecognizerIntent())
+    }
+
+    private fun resetOnMainThread() {
+        mainHandler.removeCallbacks(stopTimeout)
+        sessionActive = false
+        lastPartialText = ""
+
+        recognizer?.let {
+            try {
+                it.cancel()
+                it.destroy()
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+        recognizer = null
+
+        audioFocus.unfocus()
+    }
+
+    private fun fail(failure: SpeechEngineFailure) {
+        if (!sessionActive) return
+
+        resetOnMainThread()
+        onFailure(failure)
+    }
+
+    private fun createRecognizer(): SpeechRecognizer? {
+        return try {
+            if (configuration.preferGoogleService && isGoogleServiceAvailable()) {
+                SpeechRecognizer.createSpeechRecognizer(context, GOOGLE_SERVICE_COMPONENT)
+            } else {
+                SpeechRecognizer.createSpeechRecognizer(context)
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+            null
+        }
+    }
+
+    private fun isGoogleServiceAvailable(): Boolean {
+        return try {
+            context.packageManager.getServiceInfo(GOOGLE_SERVICE_COMPONENT, 0) != null
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    private fun buildRecognizerIntent(): Intent {
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
+        intent.putExtra(
+            RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+            RecognizerIntent.LANGUAGE_MODEL_FREE_FORM
+        )
+        configuration.languageTag?.let {
+            intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, it)
+        }
+        intent.putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, configuration.showLivePartialResults)
+        intent.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+        intent.putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, context.packageName)
+        // Ask for server-based recognition when the service supports choosing
+        intent.putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, false)
+        return intent
+    }
+
+    private fun extractText(results: Bundle?): String {
+        val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION) ?: return ""
+        return matches.firstOrNull()?.trim() ?: ""
+    }
+
+    private val recognitionListener = object : RecognitionListener {
+        override fun onReadyForSpeech(params: Bundle?) {
+            if (!sessionActive) return
+            listener.recordingStarted(ONLINE_DEVICE_STATE)
+        }
+
+        override fun onBeginningOfSpeech() {}
+
+        override fun onRmsChanged(rmsdB: Float) {
+            if (!sessionActive) return
+            listener.updateMagnitude(magnitudeFromRmsDb(rmsdB), MagnitudeState.TALKING)
+        }
+
+        override fun onBufferReceived(buffer: ByteArray?) {}
+
+        override fun onEndOfSpeech() {}
+
+        override fun onPartialResults(partialResults: Bundle?) {
+            if (!sessionActive) return
+
+            val text = extractText(partialResults)
+            if (text.isEmpty()) return
+
+            lastPartialText = text
+            if (configuration.showLivePartialResults) {
+                listener.partialResult(text)
+            }
+        }
+
+        override fun onResults(results: Bundle?) {
+            if (!sessionActive) return
+
+            mainHandler.removeCallbacks(stopTimeout)
+            val text = extractText(results).ifEmpty { lastPartialText }
+            resetOnMainThread()
+            listener.finished(text)
+        }
+
+        override fun onError(error: Int) {
+            if (!sessionActive) return
+
+            mainHandler.removeCallbacks(stopTimeout)
+
+            when (val failure = speechEngineFailureFromErrorCode(error)) {
+                SpeechEngineFailure.PERMISSION -> {
+                    resetOnMainThread()
+                    listener.needPermission { wasGranted ->
+                        if (wasGranted) {
+                            start()
+                        }
+                    }
+                }
+
+                // Nothing was recognized: same outcome as an empty local result
+                SpeechEngineFailure.NO_MATCH -> {
+                    resetOnMainThread()
+                    listener.finished("")
+                }
+
+                else -> fail(failure)
+            }
+        }
+
+        override fun onEvent(eventType: Int, params: Bundle?) {}
+    }
+}
