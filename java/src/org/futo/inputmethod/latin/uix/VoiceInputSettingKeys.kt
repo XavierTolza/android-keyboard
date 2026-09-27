@@ -2,6 +2,7 @@ package org.futo.inputmethod.latin.uix
 
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
+import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 
 val ENABLE_SOUND = SettingsKey(
@@ -71,5 +72,32 @@ val USE_PERSONAL_DICT = SettingsKey(
 
 val ANIMATE_BUBBLE = SettingsKey(
     key = booleanPreferencesKey("animate_bubble"),
+    default = true
+)
+
+/** Which speech-to-text engine to use: "auto", "online" or "offline". */
+val VOICE_INPUT_ENGINE_MODE = SettingsKey(
+    key = stringPreferencesKey("voice_input_engine_mode"),
+    default = "auto"
+)
+
+/** BCP-47 tag of the online recognition language; empty means "same as keyboard language". */
+val VOICE_INPUT_ONLINE_LANGUAGE = SettingsKey(
+    key = stringPreferencesKey("voice_input_online_language"),
+    default = ""
+)
+
+val VOICE_INPUT_ONLINE_LIVE_PARTIALS = SettingsKey(
+    key = booleanPreferencesKey("voice_input_online_live_partials"),
+    default = true
+)
+
+val VOICE_INPUT_ONLINE_FALLBACK = SettingsKey(
+    key = booleanPreferencesKey("voice_input_online_fallback"),
+    default = true
+)
+
+val VOICE_INPUT_ONLINE_PREFER_GOOGLE = SettingsKey(
+    key = booleanPreferencesKey("voice_input_online_prefer_google"),
     default = true
 )

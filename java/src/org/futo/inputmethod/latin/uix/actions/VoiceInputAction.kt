@@ -39,6 +39,11 @@ import org.futo.inputmethod.latin.uix.PersistentActionState
 import org.futo.inputmethod.latin.uix.ResourceHelper
 import org.futo.inputmethod.latin.uix.USE_PERSONAL_DICT
 import org.futo.inputmethod.latin.uix.USE_VAD_AUTOSTOP
+import org.futo.inputmethod.latin.uix.VOICE_INPUT_ENGINE_MODE
+import org.futo.inputmethod.latin.uix.VOICE_INPUT_ONLINE_FALLBACK
+import org.futo.inputmethod.latin.uix.VOICE_INPUT_ONLINE_LANGUAGE
+import org.futo.inputmethod.latin.uix.VOICE_INPUT_ONLINE_LIVE_PARTIALS
+import org.futo.inputmethod.latin.uix.VOICE_INPUT_ONLINE_PREFER_GOOGLE
 import org.futo.inputmethod.latin.uix.VERBOSE_PROGRESS
 import org.futo.inputmethod.latin.uix.getSetting
 import org.futo.inputmethod.latin.uix.setSetting
@@ -52,6 +57,8 @@ import org.futo.voiceinput.shared.RecognizerViewListener
 import org.futo.voiceinput.shared.RecognizerViewSettings
 import org.futo.voiceinput.shared.RecordingSettings
 import org.futo.voiceinput.shared.SoundPlayer
+import org.futo.voiceinput.shared.engine.OnlineEngineConfiguration
+import org.futo.voiceinput.shared.engine.SpeechEngineMode
 import org.futo.voiceinput.shared.types.Language
 import org.futo.voiceinput.shared.types.ModelLoader
 import org.futo.voiceinput.shared.types.getLanguageFromWhisperString
@@ -114,7 +121,7 @@ class VoiceInputPersistentState(val manager: KeyboardManagerForAction) : Persist
 
 private class VoiceInputActionWindow(
     val manager: KeyboardManagerForAction, val state: VoiceInputPersistentState,
-    val model: ModelLoader, val locales: List<Locale>
+    val model: ModelLoader?, val locales: List<Locale>
 ) : ActionWindow(), RecognizerViewListener {
     val context = manager.getContext()
 
@@ -129,6 +136,17 @@ private class VoiceInputActionWindow(
         val useVAD = context.getSetting(USE_VAD_AUTOSTOP)
         val usePersonalDict = context.getSetting(USE_PERSONAL_DICT)
         val animateBubble = context.getSetting(ANIMATE_BUBBLE)
+
+        val engineMode = SpeechEngineMode.fromStorageString(context.getSetting(VOICE_INPUT_ENGINE_MODE))
+        val allowLocalFallback = context.getSetting(VOICE_INPUT_ONLINE_FALLBACK)
+        val onlineLivePartials = context.getSetting(VOICE_INPUT_ONLINE_LIVE_PARTIALS)
+        val preferGoogleService = context.getSetting(VOICE_INPUT_ONLINE_PREFER_GOOGLE)
+        val onlineLanguageSetting = context.getSetting(VOICE_INPUT_ONLINE_LANGUAGE)
+        val onlineLanguageTag = if (onlineLanguageSetting.isNotBlank()) {
+            onlineLanguageSetting
+        } else {
+            locales.firstOrNull()?.takeIf { it != Locale.ROOT }?.toLanguageTag()
+        }
 
         val primaryModel = model
         val languageSpecificModels = mutableMapOf<Language, ModelLoader>()
@@ -145,10 +163,20 @@ private class VoiceInputActionWindow(
             shouldShowInlinePartialResult = false,
             shouldShowVerboseFeedback = verboseFeedback,
             shouldAnimateBubble = animateBubble,
-            modelRunConfiguration = MultiModelRunConfiguration(
-                primaryModel = primaryModel,
-                languageSpecificModels = languageSpecificModels
+            engineMode = engineMode,
+            onlineConfiguration = OnlineEngineConfiguration(
+                languageTag = onlineLanguageTag,
+                showLivePartialResults = onlineLivePartials,
+                preferGoogleService = preferGoogleService,
+                requestAudioFocus = requestAudioFocus
             ),
+            allowLocalFallback = allowLocalFallback,
+            modelRunConfiguration = primaryModel?.let {
+                MultiModelRunConfiguration(
+                    primaryModel = it,
+                    languageSpecificModels = languageSpecificModels
+                )
+            },
             decodingConfiguration = DecodingConfiguration(
                 glossary = glossary,
                 languages = allowedLanguages,
@@ -311,7 +339,12 @@ val VoiceInputAction = Action(icon = R.drawable.mic_fill,
 
         val model = ResourceHelper.tryFindingVoiceInputModelForLocale(manager.getContext(), locales.firstOrNull() ?: Locale.ROOT)
 
-        if(model == null) {
+        val engineMode = SpeechEngineMode.fromStorageString(
+            manager.getContext().getSetting(VOICE_INPUT_ENGINE_MODE)
+        )
+
+        // Without a local model, voice input can only work through online recognition
+        if(model == null && engineMode == SpeechEngineMode.OFFLINE) {
             VoiceInputNoModelWindow(locales.firstOrNull() ?: Locale.ROOT)
         } else {
             VoiceInputActionWindow(
