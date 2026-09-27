@@ -58,4 +58,10 @@
          usually the fix is to re-download the model and re-import it. For example this may happen
          when the model is imported before the file is finished downloading -->
     <string name="model_load_error">Error loading model. It may be corrupted or incomplete. Try reverting it to default or downloading again.</string>
+
+    <!-- Shown while switching from online (cloud) speech recognition to the on-device model after a failure -->
+    <string name="switching_to_offline_model">Switching to offline model…</string>
+
+    <!-- Shown when online speech recognition failed and no on-device model is available to retry with -->
+    <string name="online_recognition_failed">Online voice recognition failed. Check your connection, or install an offline model to use voice input without internet. Tap to open settings.</string>
 </resources>
