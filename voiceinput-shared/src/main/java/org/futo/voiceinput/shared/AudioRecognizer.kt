@@ -2,19 +2,15 @@ package org.futo.voiceinput.shared
 
 import android.Manifest
 import android.content.Context
-import android.content.Intent
 import android.content.pm.PackageManager
 import android.hardware.SensorPrivacyManager
 import android.media.AudioDeviceInfo
-import android.media.AudioFocusRequest
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.media.MicrophoneDirection
-import android.net.Uri
 import android.os.Build
-import android.provider.Settings
 import android.util.Log
 import androidx.lifecycle.LifecycleCoroutineScope
 import com.konovalov.vad.Vad
@@ -31,6 +27,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.yield
 import org.futo.voiceinput.shared.ggml.InferenceCancelledException
 import org.futo.voiceinput.shared.ggml.InvalidModelException
+import org.futo.voiceinput.shared.engine.SpeechEngine
 import org.futo.voiceinput.shared.types.AudioRecognizerListener
 import org.futo.voiceinput.shared.types.InferenceState
 import org.futo.voiceinput.shared.types.Language
@@ -38,6 +35,8 @@ import org.futo.voiceinput.shared.types.MagnitudeState
 import org.futo.voiceinput.shared.types.ModelInferenceCallback
 import org.futo.voiceinput.shared.types.ModelLoader
 import org.futo.voiceinput.shared.ui.MicrophoneDeviceState
+import org.futo.voiceinput.shared.util.AudioFocusController
+import org.futo.voiceinput.shared.util.openMicPermissionSettings
 import org.futo.voiceinput.shared.whisper.DecodingConfiguration
 import org.futo.voiceinput.shared.whisper.ModelManager
 import org.futo.voiceinput.shared.whisper.MultiModelRunConfiguration
@@ -98,7 +97,7 @@ class AudioRecognizer(
     modelManager: ModelManager,
     private val listener: AudioRecognizerListener,
     private val settings: AudioRecognizerSettings
-) {
+) : SpeechEngine {
     private var isRecording = false
     private var recorder: AudioRecord? = null
 
@@ -112,41 +111,9 @@ class AudioRecognizer(
     private var modelJob: Job? = null
     private var loadModelJob: Job? = null
 
-    private var focusRequest: AudioFocusRequest? = null
+    private val audioFocus = AudioFocusController(context, settings.recordingConfiguration.requestAudioFocus)
 
     private var communicationDevice = "unknown"
-
-    private fun focusAudio() {
-        unfocusAudio()
-
-        if(!settings.recordingConfiguration.requestAudioFocus) return
-
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
-                focusRequest =
-                    AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE)
-                        .build()
-                audioManager.requestAudioFocus(focusRequest!!)
-            }
-        }catch(e: Exception) {
-            e.printStackTrace()
-        }
-    }
-
-    private fun unfocusAudio() {
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
-                if (focusRequest != null) {
-                    audioManager.abandonAudioFocusRequest(focusRequest!!)
-                }
-                focusRequest = null
-            }
-        }catch(e: Exception) {
-            e.printStackTrace()
-        }
-    }
 
     private fun isBluetoothAvailable(): Boolean {
         try {
@@ -215,7 +182,7 @@ class AudioRecognizer(
         verifyModelsExist()
     }
 
-    fun reset() {
+    override fun reset() {
         recorder?.stop()
         recorderJob?.cancel()
 
@@ -227,34 +194,28 @@ class AudioRecognizer(
 
         modelRunner.cancelAll()
 
-        unfocusAudio()
+        audioFocus.unfocus()
 
         clearCommunicationDevice()
     }
 
-    fun finish() {
+    override fun finish() {
         if(!isRecording) return
         onFinishRecording()
     }
 
-    fun cancel() {
+    override fun cancel() {
         reset()
         listener.cancelled()
     }
 
-    fun openPermissionSettings() {
-        val packageName = context.packageName
-        val micPermissionRequester = Intent()
-        micPermissionRequester.setClassName(context, "org.futo.inputmethod.latin.MicPermissionActivity")
-        micPermissionRequester.setFlags(
-            Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
-        )
-        context.startActivity(micPermissionRequester)
+    override fun openPermissionSettings() {
+        openMicPermissionSettings(context)
 
         cancel()
     }
 
-    fun start() {
+    override fun start() {
         listener.loading()
 
         if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
@@ -507,7 +468,7 @@ class AudioRecognizer(
             return
         }
 
-        focusAudio()
+        audioFocus.focus()
 
         listener.recordingStarted(device)
 

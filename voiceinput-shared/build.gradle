@@ -107,6 +107,11 @@ android {
         viewBinding true
         mlModelBinding true
     }
+    testOptions {
+        unitTests {
+            returnDefaultValues = true
+        }
+    }
 }
 
 dependencies {
@@ -130,4 +135,6 @@ dependencies {
     implementation(name:'vad-release', ext:'aar')
 
     implementation 'org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.1'
+
+    testImplementation 'junit:junit:4.13.2'
 }

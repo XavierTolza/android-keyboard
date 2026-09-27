@@ -18,6 +18,11 @@ import org.futo.inputmethod.latin.uix.SYSTEM_VOICE_INPUT_PACKAGE
 import org.futo.inputmethod.latin.uix.USE_PERSONAL_DICT
 import org.futo.inputmethod.latin.uix.USE_SYSTEM_VOICE_INPUT
 import org.futo.inputmethod.latin.uix.USE_VAD_AUTOSTOP
+import org.futo.inputmethod.latin.uix.VOICE_INPUT_ENGINE_MODE
+import org.futo.inputmethod.latin.uix.VOICE_INPUT_ONLINE_FALLBACK
+import org.futo.inputmethod.latin.uix.VOICE_INPUT_ONLINE_LANGUAGE
+import org.futo.inputmethod.latin.uix.VOICE_INPUT_ONLINE_LIVE_PARTIALS
+import org.futo.inputmethod.latin.uix.VOICE_INPUT_ONLINE_PREFER_GOOGLE
 import org.futo.inputmethod.latin.uix.settings.DropDownPickerSettingItem
 import org.futo.inputmethod.latin.uix.settings.NavigationItemStyle
 import org.futo.inputmethod.latin.uix.settings.Tip
@@ -27,10 +32,28 @@ import org.futo.inputmethod.latin.uix.settings.useDataStore
 import org.futo.inputmethod.latin.uix.settings.useDataStoreValue
 import org.futo.inputmethod.latin.uix.settings.userSettingNavigationItem
 import org.futo.inputmethod.latin.uix.settings.userSettingToggleDataStore
+import org.futo.voiceinput.shared.engine.SpeechEngineMode
+import java.util.Locale
 
 private val visibilityCheckNotSystemVoiceInput = @Composable {
     useDataStoreValue(USE_SYSTEM_VOICE_INPUT) == false
 }
+
+private val visibilityCheckOnlineEngine = @Composable {
+    useDataStoreValue(USE_SYSTEM_VOICE_INPUT) == false &&
+        useDataStoreValue(VOICE_INPUT_ENGINE_MODE) != "offline"
+}
+
+// BCP-47 tags offered for the online recognition language
+private val ONLINE_LANGUAGE_TAGS = listOf(
+    "en-US", "en-GB", "fr-FR", "es-ES", "es-MX", "de-DE", "it-IT",
+    "pt-BR", "pt-PT", "nl-NL", "ru-RU", "ja-JP", "ko-KR", "zh-CN",
+    "zh-TW", "ar-SA", "hi-IN", "tr-TR", "pl-PL", "sv-SE", "da-DK",
+    "fi-FI", "nb-NO", "el-GR", "he-IL", "th-TH", "vi-VN", "id-ID",
+    "uk-UA", "cs-CZ", "ro-RO", "hu-HU", "bg-BG", "hr-HR", "sr-RS",
+    "sk-SK", "sl-SI", "lt-LT", "lv-LV", "et-EE", "fa-IR", "bn-IN",
+    "ta-IN", "ms-MY", "fil-PH"
+)
 
 private data class VoiceIMEInfo(
     val builtin: Boolean,
@@ -115,6 +138,88 @@ val VoiceInputMenu = UserSettingsMenu(
                         currOption?.name ?: externalPkg.value))
             }
         },
+
+        UserSetting(
+            name = R.string.voice_input_settings_engine,
+            visibilityCheck = visibilityCheckNotSystemVoiceInput,
+            searchTagList = listOf(
+                R.string.voice_input_settings_engine_auto,
+                R.string.voice_input_settings_engine_online,
+                R.string.voice_input_settings_engine_offline
+            )
+        ) {
+            val engineMode = useDataStore(VOICE_INPUT_ENGINE_MODE)
+            val res = LocalResources.current
+            val modes = remember { SpeechEngineMode.entries.toList() }
+            val current = remember(engineMode.value) {
+                SpeechEngineMode.fromStorageString(engineMode.value)
+            }
+
+            DropDownPickerSettingItem(
+                stringResource(R.string.voice_input_settings_engine),
+                modes,
+                current,
+                { engineMode.setValue(it.toStorageString()) },
+                {
+                    when (it) {
+                        SpeechEngineMode.AUTO ->
+                            res.getString(R.string.voice_input_settings_engine_auto)
+                        SpeechEngineMode.ONLINE ->
+                            res.getString(R.string.voice_input_settings_engine_online)
+                        SpeechEngineMode.OFFLINE ->
+                            res.getString(R.string.voice_input_settings_engine_offline)
+                    }
+                }
+            )
+
+            if (current == SpeechEngineMode.OFFLINE) {
+                Tip(stringResource(R.string.voice_input_settings_engine_offline_notice))
+            } else {
+                Tip(stringResource(R.string.voice_input_settings_engine_online_warning))
+            }
+        },
+
+        UserSetting(
+            name = R.string.voice_input_settings_online_language,
+            subtitle = R.string.voice_input_settings_online_language_subtitle,
+            visibilityCheck = visibilityCheckOnlineEngine
+        ) {
+            val language = useDataStore(VOICE_INPUT_ONLINE_LANGUAGE)
+            val res = LocalResources.current
+            val options = remember { listOf("") + ONLINE_LANGUAGE_TAGS }
+
+            DropDownPickerSettingItem(
+                stringResource(R.string.voice_input_settings_online_language),
+                options,
+                language.value,
+                { language.setValue(it) },
+                { tag ->
+                    if (tag.isEmpty()) {
+                        res.getString(R.string.voice_input_settings_online_language_auto)
+                    } else {
+                        Locale.forLanguageTag(tag).displayName
+                    }
+                }
+            )
+        },
+
+        userSettingToggleDataStore(
+            title = R.string.voice_input_settings_online_live_partials,
+            subtitle = R.string.voice_input_settings_online_live_partials_subtitle,
+            setting = VOICE_INPUT_ONLINE_LIVE_PARTIALS
+        ).copy(visibilityCheck = visibilityCheckNotSystemVoiceInput),
+
+        userSettingToggleDataStore(
+            title = R.string.voice_input_settings_online_fallback,
+            subtitle = R.string.voice_input_settings_online_fallback_subtitle,
+            setting = VOICE_INPUT_ONLINE_FALLBACK
+        ).copy(visibilityCheck = visibilityCheckOnlineEngine),
+
+        userSettingToggleDataStore(
+            title = R.string.voice_input_settings_online_prefer_google,
+            subtitle = R.string.voice_input_settings_online_prefer_google_subtitle,
+            setting = VOICE_INPUT_ONLINE_PREFER_GOOGLE
+        ).copy(visibilityCheck = visibilityCheckOnlineEngine),
 
         //if(!systemVoiceInput.value) {
         userSettingToggleDataStore(

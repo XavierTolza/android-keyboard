@@ -18,6 +18,16 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.LifecycleCoroutineScope
+import org.futo.voiceinput.shared.engine.ConnectivityManagerNetworkStatus
+import org.futo.voiceinput.shared.engine.GoogleSpeechRecognizer
+import org.futo.voiceinput.shared.engine.OnlineEngineConfiguration
+import org.futo.voiceinput.shared.engine.SpeechEngine
+import org.futo.voiceinput.shared.engine.SpeechEngineFailure
+import org.futo.voiceinput.shared.engine.SpeechEngineKind
+import org.futo.voiceinput.shared.engine.SpeechEngineMode
+import org.futo.voiceinput.shared.engine.isOnlineRecognitionUsable
+import org.futo.voiceinput.shared.engine.selectSpeechEngine
+import org.futo.voiceinput.shared.engine.shouldFallBackToLocal
 import org.futo.voiceinput.shared.types.AudioRecognizerListener
 import org.futo.voiceinput.shared.types.InferenceState
 import org.futo.voiceinput.shared.types.Language
@@ -36,7 +46,12 @@ data class RecognizerViewSettings(
     val shouldShowInlinePartialResult: Boolean,
     val shouldAnimateBubble: Boolean,
 
-    val modelRunConfiguration: MultiModelRunConfiguration,
+    val engineMode: SpeechEngineMode,
+    val onlineConfiguration: OnlineEngineConfiguration,
+    val allowLocalFallback: Boolean,
+
+    /** The on-device model to use, or null when none is installed. */
+    val modelRunConfiguration: MultiModelRunConfiguration?,
     val decodingConfiguration: DecodingConfiguration,
     val recordingConfiguration: RecordingSettings
 )
@@ -78,14 +93,14 @@ class RecognizerView(
     private val context: Context,
     private val listener: RecognizerViewListener,
     private val settings: RecognizerViewSettings,
-    lifecycleScope: LifecycleCoroutineScope,
-    modelManager: ModelManager
+    private val lifecycleScope: LifecycleCoroutineScope,
+    private val modelManager: ModelManager
 ) {
     private val magnitudeState = mutableFloatStateOf(0.0f)
     private val statusState = mutableStateOf(MagnitudeState.NOT_TALKED_YET)
 
     enum class CurrentView {
-        LoadingCircle, PartialDecodingResult, InnerRecognize, PermissionError, ModelError
+        LoadingCircle, PartialDecodingResult, InnerRecognize, PermissionError, ModelError, OnlineError
     }
 
     private val loadingCircleText = mutableStateOf("")
@@ -99,6 +114,27 @@ class RecognizerView(
         deviceName = "",
         bluetoothPreferredByUser = false
     ))
+
+    @Composable
+    private fun ClickableErrorText(text: String) {
+        Box(modifier = Modifier
+            .fillMaxSize()
+            .clickable(
+                enabled = true,
+                onClickLabel = null,
+                onClick = {
+                    listener.openSettings()
+                },
+                role = null,
+                indication = null,
+                interactionSource = remember { MutableInteractionSource() })) {
+            Text(
+                text,
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .padding(8.dp), textAlign = TextAlign.Center)
+        }
+    }
 
     @Composable
     fun Content() {
@@ -125,38 +161,31 @@ class RecognizerView(
 
             CurrentView.PermissionError -> {
                 Column {
-                    RecognizeMicError(openSettings = { recognizer.openPermissionSettings() })
+                    RecognizeMicError(openSettings = { currentEngine?.openPermissionSettings() })
                 }
             }
 
             CurrentView.ModelError -> {
-                Box(modifier = Modifier
-                    .fillMaxSize()
-                    .clickable(
-                        enabled = true,
-                        onClickLabel = null,
-                        onClick = {
-                            listener.openSettings()
-                        },
-                        role = null,
-                        indication = null,
-                        interactionSource = remember { MutableInteractionSource() })) {
-                    Text(
-                        stringResource(R.string.model_load_error),
-                        modifier = Modifier
-                            .align(Alignment.Center)
-                            .padding(8.dp), textAlign = TextAlign.Center)
-                }
+                ClickableErrorText(text = stringResource(R.string.model_load_error))
+            }
+
+            CurrentView.OnlineError -> {
+                ClickableErrorText(text = stringResource(R.string.online_recognition_failed))
             }
         }
     }
 
     fun finish() {
-        recognizer.finish()
+        currentEngine?.finish()
     }
 
     fun cancel() {
-        recognizer.cancel()
+        val engine = currentEngine
+        if (engine == null) {
+            audioRecognizerListener.cancelled()
+        } else {
+            engine.cancel()
+        }
     }
 
     private val audioRecognizerListener = object : AudioRecognizerListener {
@@ -237,23 +266,74 @@ class RecognizerView(
         }
     }
 
-    private val recognizer: AudioRecognizer = AudioRecognizer(
-        context = context,
-        lifecycleScope = lifecycleScope,
-        modelManager = modelManager,
-        listener = audioRecognizerListener,
-        settings = AudioRecognizerSettings(
-            modelRunConfiguration = settings.modelRunConfiguration,
-            decodingConfiguration = settings.decodingConfiguration,
-            recordingConfiguration = settings.recordingConfiguration
-        )
+    private val selection = selectSpeechEngine(
+        mode = settings.engineMode,
+        isOnlineUsable = isOnlineRecognitionUsable(context, ConnectivityManagerNetworkStatus(context)),
+        canFallBackToLocal = settings.allowLocalFallback && settings.modelRunConfiguration != null
     )
 
+    private val onlineEngine = GoogleSpeechRecognizer(
+        context = context,
+        listener = audioRecognizerListener,
+        configuration = settings.onlineConfiguration,
+        onFailure = ::handleEngineFailure
+    )
+
+    private var localEngine: SpeechEngine? = null
+    private var currentEngine: SpeechEngine? = null
+
+    private fun obtainLocalEngine(): SpeechEngine? {
+        localEngine?.let { return it }
+
+        val runConfiguration = settings.modelRunConfiguration ?: return null
+
+        return try {
+            AudioRecognizer(
+                context = context,
+                lifecycleScope = lifecycleScope,
+                modelManager = modelManager,
+                listener = audioRecognizerListener,
+                settings = AudioRecognizerSettings(
+                    modelRunConfiguration = runConfiguration,
+                    decodingConfiguration = settings.decodingConfiguration,
+                    recordingConfiguration = settings.recordingConfiguration
+                )
+            ).also { localEngine = it }
+        } catch (e: ModelDoesNotExistException) {
+            null
+        }
+    }
+
+    private fun handleEngineFailure(failure: SpeechEngineFailure) {
+        val local = obtainLocalEngine()
+
+        if (shouldFallBackToLocal(failure, selection) && local != null) {
+            currentEngine = local
+            loadingCircleText.value = context.getString(R.string.switching_to_offline_model)
+            currentViewState.value = CurrentView.LoadingCircle
+            local.start()
+        } else {
+            listener.cancelled()
+            currentViewState.value = CurrentView.OnlineError
+        }
+    }
+
     fun reset() {
-        recognizer.reset()
+        currentEngine?.reset()
     }
 
     fun start() {
-        recognizer.start()
+        val engine = when (selection.kind) {
+            SpeechEngineKind.ONLINE -> onlineEngine
+            SpeechEngineKind.LOCAL -> obtainLocalEngine()
+        }
+
+        if (engine == null) {
+            audioRecognizerListener.modelLoadingFailed()
+            return
+        }
+
+        currentEngine = engine
+        engine.start()
     }
 }

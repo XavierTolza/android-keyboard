@@ -602,6 +602,23 @@
     <string name="voice_input_settings_change_models">Models</string>
     <string name="voice_input_settings_change_models_subtitle">To change the models, visit Languages &amp; Models menu</string>
 
+    <!-- Voice input engine settings (online/offline speech recognition) -->
+    <string name="voice_input_settings_engine">Recognition engine</string>
+    <string name="voice_input_settings_engine_auto">Auto (online if connected)</string>
+    <string name="voice_input_settings_engine_online">Online (Google speech service)</string>
+    <string name="voice_input_settings_engine_offline">Offline (on-device model)</string>
+    <string name="voice_input_settings_engine_online_warning">Online recognition uses the speech service provided by your system (usually Google) and sends your voice to its servers. It is not covered by our privacy policy. If it is unavailable or fails, voice input falls back to the on-device model.</string>
+    <string name="voice_input_settings_engine_offline_notice">Speech is processed entirely on this device and never leaves it.</string>
+    <string name="voice_input_settings_online_language">Online recognition language</string>
+    <string name="voice_input_settings_online_language_auto">Same as keyboard language</string>
+    <string name="voice_input_settings_online_language_subtitle">Language understood by the online speech service</string>
+    <string name="voice_input_settings_online_live_partials">Live partial results</string>
+    <string name="voice_input_settings_online_live_partials_subtitle">Show recognized text while still speaking (online engine only)</string>
+    <string name="voice_input_settings_online_fallback">Offline fallback</string>
+    <string name="voice_input_settings_online_fallback_subtitle">Retry with the on-device model if online recognition fails</string>
+    <string name="voice_input_settings_online_prefer_google">Prefer Google speech service</string>
+    <string name="voice_input_settings_online_prefer_google_subtitle">Use the Google app for online recognition when installed instead of the default speech service</string>
+
     <!-- Prediction menu -->
     <string name="prediction_settings_title">Text Prediction</string>
     <string name="prediction_settings_transformer">Transformer LM</string>
